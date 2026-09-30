@@ -171,33 +171,73 @@ public class ServiceLayerClient : IDisposable
         return new DocumentResult(false, null, posts, lastError);
     }
 
-    private async Task<(bool Ok, string? DocEntry, string Error)> FindByReferenceAsync(string endpoint, string reference, bool allowRelogin = true)
+    private async Task<(bool Ok, string? DocEntry, string Error)> FindByReferenceAsync(string endpoint, string reference)
     {
-        var filter = Uri.EscapeDataString($"NumAtCard eq '{reference.Replace("'", "''")}'");
+        var filter = Uri.EscapeDataString($"NumAtCard eq '{EscapeODataString(reference)}'");
+        var (json, error) = await GetJsonAsync($"/b1s/v1/{endpoint}?$select=DocEntry&$filter={filter}");
+        if (json == null) return (false, null, error);
+
+        var first = (json["value"] as JArray)?.FirstOrDefault();
+        return (true, first?["DocEntry"]?.ToString(), "");
+    }
+
+    // Documentos cuyo NumAtCard empieza con "prefix", ordenados por DocNum (sigue la paginación de Service Layer).
+    public async Task<(bool Ok, List<(string Reference, string DocEntry, string DocNum)> Docs, string Error)> GetDocumentsByReferencePrefixAsync(
+        string endpoint, string prefix)
+    {
+        var docs = new List<(string, string, string)>();
+        var filter = Uri.EscapeDataString($"startswith(NumAtCard,'{EscapeODataString(prefix)}')");
+        string? url = $"/b1s/v1/{endpoint}?$select=DocEntry,DocNum,NumAtCard&$filter={filter}&$orderby=DocNum";
+
+        while (url != null)
+        {
+            var (json, error) = await GetJsonAsync(url, "odata.maxpagesize=500");
+            if (json == null) return (false, docs, error);
+
+            foreach (var item in json["value"] as JArray ?? new JArray())
+            {
+                docs.Add((item["NumAtCard"]?.ToString() ?? "", item["DocEntry"]?.ToString() ?? "", item["DocNum"]?.ToString() ?? ""));
+            }
+
+            // v1 usa "odata.nextLink" y v2 "@odata.nextLink"; el enlace es relativo a /b1s/v1/
+            var next = (json["odata.nextLink"] ?? json["@odata.nextLink"])?.ToString();
+            url = string.IsNullOrEmpty(next) ? null : next.StartsWith("/") ? next : $"/b1s/v1/{next}";
+        }
+
+        return (true, docs, "");
+    }
+
+    // GET que renueva la sesión una vez si expiró. Devuelve el JSON o el error.
+    private async Task<(JObject? Json, string Error)> GetJsonAsync(string url, string? prefer = null, bool allowRelogin = true)
+    {
         try
         {
-            using var resp = await _http.GetAsync($"/b1s/v1/{endpoint}?$select=DocEntry&$filter={filter}");
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            if (prefer != null) req.Headers.Add("Prefer", prefer);
+
+            using var resp = await _http.SendAsync(req);
             var text = await resp.Content.ReadAsStringAsync();
 
             if (resp.StatusCode == HttpStatusCode.Unauthorized && allowRelogin)
             {
                 var (logged, loginError) = await LoginAsync();
-                if (!logged) return (false, null, $"re-login falló: {loginError}");
-                return await FindByReferenceAsync(endpoint, reference, allowRelogin: false);
+                if (!logged) return (null, $"re-login falló: {loginError}");
+                return await GetJsonAsync(url, prefer, allowRelogin: false);
             }
             if (!resp.IsSuccessStatusCode)
             {
-                return (false, null, $"HTTP {(int)resp.StatusCode}: {ExtractErrorMessage(text)}");
+                return (null, $"HTTP {(int)resp.StatusCode}: {ExtractErrorMessage(text)}");
             }
 
-            var first = (JObject.Parse(text)["value"] as JArray)?.FirstOrDefault();
-            return (true, first?["DocEntry"]?.ToString(), "");
+            return (JObject.Parse(text), "");
         }
         catch (Exception ex)
         {
-            return (false, null, ex.Message);
+            return (null, ex.Message);
         }
     }
+
+    private static string EscapeODataString(string value) => value.Replace("'", "''");
 
     private static bool IsTransient(HttpStatusCode status) =>
         status is HttpStatusCode.RequestTimeout
