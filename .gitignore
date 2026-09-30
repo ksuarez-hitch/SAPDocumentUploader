@@ -1,0 +1,7 @@
+# Artefactos de compilación
+bin/
+obj/
+
+# Archivos locales de Visual Studio
+.vs/
+*.user
