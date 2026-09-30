@@ -132,6 +132,24 @@ class Program
                 round++;
             }
 
+            // Consulta a SAP los documentos de esta carga para registrar su DocNum.
+            Console.WriteLine("\nConsultando DocNum en SAP...");
+            var docNumPath = Path.ChangeExtension(logPath, null) + "_docnum.csv";
+            var (docsOk, docs, docsError) = await clients[0].GetDocumentsByReferencePrefixAsync(endpoint, $"{batchId}-");
+            if (docsOk)
+            {
+                using var docNumLog = new StreamWriter(docNumPath, false, new UTF8Encoding(true));
+                docNumLog.WriteLine("Referencia;DocEntry;DocNum");
+                foreach (var (reference, docEntry, docNum) in docs)
+                {
+                    docNumLog.WriteLine($"{reference};{docEntry};{docNum}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"Aviso: no se pudo obtener el DocNum ({docsError})");
+            }
+
             Console.WriteLine("\n========== RESUMEN FINAL ==========");
             Console.WriteLine($"Solicitados: {quantity}");
             Console.WriteLine($"Creados:     {totalOk}");
@@ -140,9 +158,15 @@ class Program
                 Console.WriteLine($"Inciertos:   {totalUncertain} (revisar en SAP por NumAtCard antes de volver a cargarlos)");
             }
             Console.WriteLine($"Pendientes:  {quantity - totalOk - totalUncertain}");
+            if (docsOk)
+            {
+                Console.WriteLine($"En SAP:      {docs.Count} documentos con la referencia de esta carga");
+                if (docs.Count > 0) Console.WriteLine($"DocNum:      {docs[0].DocNum} a {docs[^1].DocNum}");
+            }
             Console.WriteLine($"Duración:    {totalWatch.Elapsed:hh\\:mm\\:ss}");
             Console.WriteLine($"Referencia:  {batchId}-*");
             Console.WriteLine($"Log:         {logPath}");
+            if (docsOk) Console.WriteLine($"DocNum:      {docNumPath}");
 
             return totalOk == quantity ? 0 : 2;
         }
